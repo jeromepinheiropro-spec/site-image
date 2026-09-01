@@ -6,12 +6,171 @@
 <meta name="robots" content="noindex, nofollow">
 <title>.</title>
 <style>
-  html,body{height:100%;margin:0;background:#000;}
-  body{display:flex;align-items:center;justify-content:center;}
-  img{max-width:100%;max-height:100vh;object-fit:contain;display:block;}
+  html, body { height: 100%; margin: 0; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  #photo {
+    max-width: 100%; max-height: 100vh;
+    object-fit: contain; display: block;
+    position: relative; z-index: 1;
+    filter: brightness(0.68) saturate(1.08) contrast(1.04);
+  }
+  #fx {
+    position: fixed; inset: 0;
+    width: 100%; height: 100%;
+    z-index: 2; pointer-events: none;
+    mix-blend-mode: screen;
+  }
 </style>
 </head>
 <body>
-  <img src="/image.jpg" alt="">
+  <img id="photo" src="/image.jpg" alt="">
+  <canvas id="fx"></canvas>
+
+<script>
+(() => {
+  const cv = document.getElementById('fx');
+  const ctx = cv.getContext('2d', { alpha: true });
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  let W = 0, H = 0, dpr = 1;
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = cv.clientWidth; H = cv.clientHeight;
+    cv.width = Math.floor(W * dpr); cv.height = Math.floor(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  resize();
+  addEventListener('resize', resize);
+
+  const GRAVITY = 0.055;
+  const rockets = [];
+  const sparks = [];
+  const rand = (a, b) => a + Math.random() * (b - a);
+
+  // Palettes chaudes + froides, une teinte dominante par explosion
+  const HUES = [0, 18, 40, 55, 120, 175, 200, 280, 320, 340];
+
+  function launch(tx, ty) {
+    const sx = tx !== undefined ? tx : rand(W * 0.12, W * 0.88);
+    const targetY = ty !== undefined ? ty : rand(H * 0.10, H * 0.45);
+    const startX = tx !== undefined ? sx + rand(-40, 40) : sx + rand(-60, 60);
+    const dy = H - targetY;
+    rockets.push({
+      x: startX, y: H + 8,
+      vx: (sx - startX) / (dy / 6.2),
+      vy: -Math.sqrt(2 * GRAVITY * dy) * 1.02,
+      hue: HUES[(Math.random() * HUES.length) | 0],
+      targetY
+    });
+  }
+
+  function explode(x, y, hue) {
+    const n = 70 + ((Math.random() * 55) | 0);
+    const power = rand(2.6, 5.2);
+    const ring = Math.random() < 0.45;          // couronne nette vs gerbe
+    const twoTone = Math.random() < 0.35;
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2 + rand(-0.05, 0.05);
+      const sp = ring ? power * rand(0.88, 1.0) : power * Math.sqrt(Math.random());
+      sparks.push({
+        x, y,
+        vx: Math.cos(a) * sp,
+        vy: Math.sin(a) * sp,
+        life: 1,
+        decay: rand(0.0075, 0.017),
+        hue: twoTone && i % 2 ? (hue + 45) % 360 : hue,
+        sat: rand(85, 100),
+        w: rand(1.6, 3.0),
+        flick: Math.random() < 0.3
+      });
+    }
+    // coeur lumineux
+    for (let i = 0; i < 14; i++) {
+      const a = Math.random() * Math.PI * 2, sp = rand(0.2, 1.1);
+      sparks.push({
+        x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+        life: 1, decay: rand(0.02, 0.045), hue, sat: 30, w: rand(2.5, 4), flick: false
+      });
+    }
+  }
+
+  let last = performance.now();
+  let nextLaunch = 0;
+
+  function frame(now) {
+    const dt = Math.min((now - last) / 16.667, 3);
+    last = now;
+
+    // Estompe : le noir devient transparent grâce au blend "screen"
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = 'rgba(0,0,0,0.13)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalCompositeOperation = 'lighter';
+
+    if (now > nextLaunch) {
+      launch();
+      if (Math.random() < 0.4) setTimeout(() => launch(), 200);
+      nextLaunch = now + rand(480, 1150);
+    }
+
+    for (let i = rockets.length - 1; i >= 0; i--) {
+      const r = rockets[i];
+      r.x += r.vx * dt; r.y += r.vy * dt; r.vy += GRAVITY * dt;
+      ctx.strokeStyle = 'hsla(' + r.hue + ',95%,78%,0.95)';
+      ctx.shadowColor = 'hsla(' + r.hue + ',95%,70%,0.9)';
+      ctx.shadowBlur = 12;
+      ctx.lineWidth = 2.6; ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(r.x, r.y);
+      ctx.lineTo(r.x - r.vx * 3.5, r.y - r.vy * 3.5);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      if (r.vy >= -0.6 || r.y <= r.targetY) {
+        explode(r.x, r.y, r.hue);
+        rockets.splice(i, 1);
+      }
+    }
+
+    for (let i = sparks.length - 1; i >= 0; i--) {
+      const s = sparks[i];
+      s.vx *= 0.986; s.vy = s.vy * 0.986 + GRAVITY * 0.62 * dt;
+      s.x += s.vx * dt; s.y += s.vy * dt;
+      s.life -= s.decay * dt;
+      if (s.life <= 0) { sparks.splice(i, 1); continue; }
+      const a = s.flick ? s.life * (0.55 + Math.random() * 0.45) : s.life;
+      const col = 'hsla(' + s.hue + ',' + s.sat + '%,' + (58 + 28 * s.life) + '%,' + a + ')';
+      ctx.shadowColor = col;
+      ctx.shadowBlur = 10 * s.life;
+      ctx.strokeStyle = col;
+      ctx.lineWidth = s.w * (0.45 + 0.75 * s.life);
+      ctx.beginPath();
+      ctx.moveTo(s.x, s.y);
+      ctx.lineTo(s.x - s.vx * 2.6, s.y - s.vy * 2.6);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  if (reduced) {
+    // Une seule salve statique, pas d'animation en boucle
+    ctx.globalCompositeOperation = 'lighter';
+    explode(W * 0.5, H * 0.35, 40);
+    sparks.forEach(s => {
+      ctx.strokeStyle = 'hsla(' + s.hue + ',' + s.sat + '%,70%,0.85)';
+      ctx.lineWidth = s.w;
+      ctx.beginPath();
+      ctx.moveTo(s.x, s.y);
+      ctx.lineTo(s.x + s.vx * 14, s.y + s.vy * 14);
+      ctx.stroke();
+    });
+  } else {
+    setTimeout(() => { launch(W * 0.5, H * 0.3); }, 250);
+    requestAnimationFrame(frame);
+    addEventListener('pointerdown', e => launch(e.clientX, e.clientY), { passive: true });
+  }
+})();
+</script>
 </body>
 </html>
